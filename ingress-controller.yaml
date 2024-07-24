@@ -1,0 +1,25 @@
+apiVersion: operator.openshift.io/v1
+kind: IngressController
+metadata:
+  name: TBS
+  namespace: openshift-ingress-operator
+spec:
+  nodePlacement:
+    nodeSelector:
+      matchLabels:
+        node-role.kubernetes.io/worker: ''
+  domain: TBS
+  namespaceSelector:
+    matchLabels: {}
+  replicas: 1
+  endpointPublishingStrategy:
+    hostNetwork:
+      # Arbitrairly chosen host ports in order to avoid conflicts
+      # with other ingress controllers that are actually meant 
+      # to do theirs job
+      httpPort: 800
+      httpsPort: 4430
+      protocol: TCP
+      statsPort: 19360
+    type: HostNetwork
+

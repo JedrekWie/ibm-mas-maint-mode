@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: TBS
+spec:
+  selector:
+    matchLabels:
+      app: TBS
+  template:
+    metadata:
+      labels:
+        app: TBS
+        deployment: TBS
+    spec:
+      containers:
+        - image: nginxinc/nginx-unprivileged
+          name: maintenance
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /etc/nginx/conf.d/default.conf
+              name: default-conf
+              subPath: default.conf
+            - mountPath: /usr/share/nginx/html/maintenance.html
+              name: maintenance-html
+              subPath: maintenance.html
+      terminationGracePeriodSeconds: 0
+      volumes:
+        - name: default-conf
+          configMap:
+            name: default-conf
+        - name: maintenance-html
+          configMap:
+            name: maintenance-html
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: TBS
+spec:
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  selector:
+    app: TBS
+    deployment: TBS
+  type: ClusterIP
