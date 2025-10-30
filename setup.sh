@@ -103,12 +103,24 @@ genBypassConfig () {
 genUpstreamConfig () {
     ROUTES_NS=$1
     # Get more route details in order to sort results.
-    # This will affect nginx matching order so routes using the same host
-    # need to be sorted the way that one witout any path (/) gets last
+    # This will affect nginx matching order.
+    # Sorting rules:
+    # 1. Deeper paths first
+    # 2. Then by host alphabetically
+    # 3. Finally by path - longer paths first
     ROUTES=$(oc get routes -n $ROUTES_NS --no-headers -o custom-columns=":metadata.name,:spec.host,:spec.path" \
-        | sort -k2b,2 -k3br,3)
+        | awk '
+            {
+                host_for_count = $2
+                path_for_count = $3
+                gsub(/[^.]/, "", host_for_count)
+                num_dots = length(host_for_count)
+                path_len = length(path_for_count)
+                print num_dots "\t" $2 "\t" path_len "\t" $0
+            }' \
+        | sort -t$'\t' -k1,1nr -k2,2 -k3,3nr)
     while IFS= read -r ROUTE; do
-        ROUTE_NAME=$(echo "$ROUTE" | awk '{print $1}')
+        ROUTE_NAME=$(echo "$ROUTE" | awk '{print $4}')
         ROUTE_YAML=$(oc get route -n $ROUTES_NS $ROUTE_NAME -o yaml)
         ROUTE_HOST=$(echo "$ROUTE_YAML" | yq '.spec.host')
         ROUTE_PATH=$(echo "$ROUTE_YAML" | yq '.spec.path')
