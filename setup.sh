@@ -37,28 +37,6 @@ ocIcYaml default | KEY=$MAINT_LABEL_KEY yq -e '.spec.namespaceSelector.matchExpr
             | oc apply -f -
     }
 
-# In non-standalone environments (e.g. DEV and TEST deployed to one OCP cluster) allow route admission accross namespaces. 
-# This is to be able to handle maintenance mode for multiple environments at the same time and yet do not experience ingress 
-# controller host conflicts
-ocStandaloneEnv $ENVL \
-    || ocIcYaml default | yq -e 'select(.spec.routeAdmission.namespaceOwnership == "InterNamespaceAllowed")' >/dev/null 2>&1 \
-    || {
-        echo "Enabling cross-namespace route admission for the default ingress controller..." \
-        && ocIcYaml default \
-            | yq '.spec.routeAdmission.namespaceOwnership = "InterNamespaceAllowed"' \
-            | oc apply -f -
-    }
-
-# Create ingress controller (if needed)
-ocIcYaml $MAINT_IC >/dev/null 2>&1 \
-    || {
-        echo "Creating  maintenance mode ingress controller..." \
-        && cat $SCRIPT_DIR/ingress-controller.yaml \
-            | NAME=$MAINT_IC DOMAIN=$(ocDomain $ENVL) KEY=$MAINT_LABEL_KEY VALUE=$MAINT_LABEL_VALUE \
-                yq -e '.metadata.name = env(NAME) | .spec.domain = env(DOMAIN) | .spec.namespaceSelector.matchLabels[env(KEY)] = env(VALUE)' \
-            | oc apply -f -
-    }
-
 # Create project if one doesn't exist yet
 oc get project $MAINT_NS >/dev/null 2>&1 \
     || {

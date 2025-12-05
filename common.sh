@@ -109,14 +109,6 @@ ocEnvDie () {
     fi
 }
 
-# Checks whether given environment is standalone (deployed to a separate OCP cluster) or shares OCP cluster
-# with other MAS environments
-# FIXME: Update evaluation to match your setup
-ocStandaloneEnv () {
-    envDie $1
-    [ "$ENVL" == "prod" ]
-}
-
 # Returns the name of the MAS instance in given environment
 # FIXME: Update MAS instance name evaluation according to your naming convention
 ocMasInstance () {
@@ -172,7 +164,7 @@ ocMaintDepl() {
 # For typical use cases it can be simply fixed value just like below
 ocMaintLblKey() {
     envDie $1
-    echo type
+    echo router-mode
 }
 
 # Returns value of the label indicating maintenance mode
@@ -180,7 +172,7 @@ ocMaintLblKey() {
 # For typical use cases it can be simply fixed value just like below
 ocMaintLblValue() {
     envDie $1
-    echo maintenance
+    echo inactive
 }
 
 # Returns the label indicating maintenance mode
