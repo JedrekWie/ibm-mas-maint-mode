@@ -2,10 +2,9 @@
 
 # Sets up all components required by maintenance mode
 # 1. Update default ingress controller
-# 2. Create new ingress controller to handle maintenance mode
-# 3. Setup Project
-# 4. Setup Deployment
-# 5. Setup alternative routes
+# 2. Setup Project
+# 3. Setup Deployment
+# 4. Setup alternative routes
 
 SCRIPT_DIR="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 . $SCRIPT_DIR/common.sh
@@ -37,28 +36,6 @@ ocIcYaml default | KEY=$MAINT_LABEL_KEY yq -e '.spec.namespaceSelector.matchExpr
             | oc apply -f -
     }
 
-# In non-standalone environments (e.g. DEV and TEST deployed to one OCP cluster) allow route admission accross namespaces. 
-# This is to be able to handle maintenance mode for multiple environments at the same time and yet do not experience ingress 
-# controller host conflicts
-ocStandaloneEnv $ENVL \
-    || ocIcYaml default | yq -e 'select(.spec.routeAdmission.namespaceOwnership == "InterNamespaceAllowed")' >/dev/null 2>&1 \
-    || {
-        echo "Enabling cross-namespace route admission for the default ingress controller..." \
-        && ocIcYaml default \
-            | yq '.spec.routeAdmission.namespaceOwnership = "InterNamespaceAllowed"' \
-            | oc apply -f -
-    }
-
-# Create ingress controller (if needed)
-ocIcYaml $MAINT_IC >/dev/null 2>&1 \
-    || {
-        echo "Creating  maintenance mode ingress controller..." \
-        && cat $SCRIPT_DIR/ingress-controller.yaml \
-            | NAME=$MAINT_IC DOMAIN=$(ocDomain $ENVL) KEY=$MAINT_LABEL_KEY VALUE=$MAINT_LABEL_VALUE \
-                yq -e '.metadata.name = env(NAME) | .spec.domain = env(DOMAIN) | .spec.namespaceSelector.matchLabels[env(KEY)] = env(VALUE)' \
-            | oc apply -f -
-    }
-
 # Create project if one doesn't exist yet
 oc get project $MAINT_NS >/dev/null 2>&1 \
     || {
@@ -85,15 +62,82 @@ oc get configmap -n $MAINT_NS maintenance-html >/dev/null 2>&1 \
 
 # Generate nginx default server configuration
 
+# Generates nginx config containing trusted proxies/load balancers IP ranges
+# Output variable is: TRUSTED_PROXIES
+genTrustedProxiesConfig () {
+    NETWORK_CIDRS=$(oc get network -o yaml | yq -r '.items[] | ((.status.clusterNetwork[] | .cidr), .status.serviceNetwork[])')
+    while read -r NODE_CIDR; do
+        TRUSTED_PROXIES+="set_real_ip_from $NODE_CIDR;###"
+    done <<< "$NETWORK_CIDRS"
+}
+
+getBypassConfigClusterNetworks () {
+    BYPASS_CIDRS+="    # Cluster networks ###"
+    NETWORK_CIDRS=$(oc get network -o yaml | yq -r '.items[] | ((.status.clusterNetwork[] | .cidr), .status.serviceNetwork[])')
+    while read -r NODE_CIDR; do
+        BYPASS_CIDRS+="    $NODE_CIDR     1;###"
+    done <<< "$NETWORK_CIDRS"
+}
+
 # Generates nginx config containing default reverse proxy bypass rules for cross node communication
-# Output variable is: BYPASSES
+# Output variable is: BYPASS_CIDRS
+genBypassConfigWorkerNodes () {
+    BYPASS_CIDRS+="    # Worker nodes ###"
+    NODE_ADDRS=$(oc get nodes --selector='node-role.kubernetes.io/worker' -o yaml | \
+        yq -r '.items[] | (.status.addresses[] | select(.type == "InternalIP") | .address)')
+    while read -r NODE_ADDR; do
+        BYPASS_CIDRS+="    $NODE_ADDR    1;###"
+    done <<< "$NODE_ADDRS"
+}
+
+# Generates nginx config containing default reverse proxy bypass rules for current host
+# Output variable is: BYPASS_CIDRS
+genBypassConfigSelfHost () {
+    # Add bypass rule for current host IP
+    CURRENT_IP=$(curl -s ifconfig.me) && [ -n "$CURRENT_IP" ] && {
+        BYPASS_CIDRS+="    # Current host: $HOSTNAME\/$USER \[$(date "+%Y-%m-%d %H:%M:%S")\] ###"
+        BYPASS_CIDRS+="    $CURRENT_IP    1;###"
+    }
+}
+
+# Generates nginx config containing default reverse proxy bypass rules for explicitly allowed IPs
+# Output variable is: BYPASS_CIDRS
+genBypassConfigExplicitIPs () {
+    # Load any additional bypass rules from the config file
+    BYPASS_LIST=$SCRIPT_DIR/bypass-cidrs.list
+    if [ -f $BYPASS_LIST ] ; then
+        BYPASS_CIDRS+="    # Additional bypass rules from $(basename $BYPASS_LIST) file ###"
+        # Read the file line by line to process each entry.
+        while IFS= read -r LINE; do
+            # 1. Skip empty or blank lines.
+            [ -z "$LINE" ] && continue
+            # 2. Skip comments (lines starting with #).
+            [[ "$LINE" =~ ^\s*# ]] && continue
+            # 3. Add the line to BYPASS_CIDRS variable.
+            BYPASS_CIDRS+="    $LINE    1;###"
+        done < "$BYPASS_LIST"
+    fi
+}
+
+# Generates nginx config containing default reverse proxy bypass secret key
+# Output variable is: BYPASS_KEY
+genBypassConfigKey () {
+    # Generate a random secret key for bypassing the maintenance mode
+    BYPASS_KEY=${BYPASS_KEY:-$(openssl rand -hex 32)}
+    echo "⚠️ Maintenance mode bypass key 🔑: $BYPASS_KEY"
+    echo "💡 Use the value printed above to bypass maintenance mode, e.g. when deploying RBA apps from other trusted area."
+}
+
+# Generates nginx config containing default reverse proxy bypass rules
+# Output variables are: 
+# * BYPASS_CIDRS
+# * BYPASS_KEY
 genBypassConfig () {
-    # Generate exception rules for worker nodes
-    NODES=$(oc get nodes --selector='node-role.kubernetes.io/worker' --no-headers -o name)
-    while IFS= read -r NODE; do
-        NODE_IP=$(oc get $NODE -o yaml | yq '.status.addresses[] | select(.type == "InternalIP") | .address')
-        BYPASSES+="    \"$NODE_IP\"    true;###"
-    done <<< "$NODES"
+    getBypassConfigClusterNetworks
+    genBypassConfigWorkerNodes
+    genBypassConfigSelfHost
+    genBypassConfigExplicitIPs
+    genBypassConfigKey
 }
 
 # Generates nginx config entries for given namespace
@@ -136,18 +180,21 @@ genUpstreamConfig () {
 }
 
 echo "Generating maintenance mode deployment config..."
+genTrustedProxiesConfig
 genBypassConfig
 for NS in $(echo $MAS_NAMESPACES); do genUpstreamConfig $NS; done
 
 # Recreate config map used by deployment
 oc delete configmap -n $MAINT_NS default-conf --ignore-not-found >/dev/null
-# Save config in a temporary file as oc cli does not allow to create config maps from standard input
-CONFIG_FILE=$(mktemp)
-sed "s/@BYPASSES@/$BYPASSES/g; s/@UPSTREAMS@/$UPSTREAMS/g; s/@BACKENDS@/$BACKENDS/g" $SCRIPT_DIR/default.conf \
-    | sed 's/###/\n/g' \
-    > $CONFIG_FILE
-oc create configmap -n $MAINT_NS default-conf --from-file=default.conf=$CONFIG_FILE >/dev/null
-rm -f $CONFIG_FILE
+CONFIG=$(sed "
+            s|@TRUSTED_PROXIES@|$TRUSTED_PROXIES|g;
+            s|@BYPASS_CIDRS@|$BYPASS_CIDRS|g; 
+            s|@BYPASS_KEY@|$BYPASS_KEY|g; 
+            s|@UPSTREAMS@|$UPSTREAMS|g; 
+            s|@BACKENDS@|$BACKENDS|g
+        " $SCRIPT_DIR/default.conf \
+    | sed 's/###/\n/g')
+oc create configmap -n $MAINT_NS default-conf --from-literal=default.conf="$CONFIG" >/dev/null
 
 # Restart deployment to apply new config map changes
 echo "Applying maintenance mode deployment config..."

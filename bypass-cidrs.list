@@ -1,0 +1,5 @@
+# Maintenance mode IP exception list 
+# bypass-ips.list
+
+# Example - CIDR 
+# 85.76.271.84/32
