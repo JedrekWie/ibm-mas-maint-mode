@@ -62,27 +62,32 @@ oc get configmap -n $MAINT_NS maintenance-html >/dev/null 2>&1 \
 
 # Generate nginx default server configuration
 
-# Generates ingress controller real IPs configuration
-# Output variable is: INGRESS_IPS
-genIngressRealIps () {
-    INGRESS_IPS=""
-    INGRESSES=$(kubectl get ingresses --all-namespaces -o yaml | \
-        yq -r '.items[] | .metadata.name as $name | .metadata.namespace as $namespace | .status.loadBalancer.ingress[] | [$name, $namespace, .ip] | join(" ")')
-    while read -r NS NAME IP; do
-        INGRESS_IPS+="# Ingress: $NAME ($NS) ###"
-        INGRESS_IPS+="set_real_ip_from $IP;###"
-    done <<< "$INGRESSES"
+# Generates nginx config containing trusted proxies/load balancers IP ranges
+# Output variable is: TRUSTED_PROXIES
+genTrustedProxiesConfig () {
+    NETWORK_CIDRS=$(oc get network -o yaml | yq -r '.items[] | ((.status.clusterNetwork[] | .cidr), .status.serviceNetwork[])')
+    while read -r NODE_CIDR; do
+        TRUSTED_PROXIES+="set_real_ip_from $NODE_CIDR;###"
+    done <<< "$NETWORK_CIDRS"
+}
+
+getBypassConfigClusterNetworks () {
+    BYPASS_CIDRS+="    # Cluster networks ###"
+    NETWORK_CIDRS=$(oc get network -o yaml | yq -r '.items[] | ((.status.clusterNetwork[] | .cidr), .status.serviceNetwork[])')
+    while read -r NODE_CIDR; do
+        BYPASS_CIDRS+="    $NODE_CIDR     1;###"
+    done <<< "$NETWORK_CIDRS"
 }
 
 # Generates nginx config containing default reverse proxy bypass rules for cross node communication
 # Output variable is: BYPASS_CIDRS
 genBypassConfigWorkerNodes () {
     BYPASS_CIDRS+="    # Worker nodes ###"
-    NODES=$(oc get nodes --selector='node-role.kubernetes.io/worker' --no-headers -o name)
-    while IFS= read -r NODE; do
-        NODE_IP=$(oc get $NODE -o yaml | yq '.status.addresses[] | select(.type == "InternalIP") | .address')
-        BYPASS_CIDRS+="    $NODE_IP    1;###"
-    done <<< "$NODES"
+    NODE_ADDRS=$(oc get nodes --selector='node-role.kubernetes.io/worker' -o yaml | \
+        yq -r '.items[] | (.status.addresses[] | select(.type == "InternalIP") | .address)')
+    while read -r NODE_ADDR; do
+        BYPASS_CIDRS+="    $NODE_ADDR    1;###"
+    done <<< "$NODE_ADDRS"
 }
 
 # Generates nginx config containing default reverse proxy bypass rules for current host
@@ -128,6 +133,7 @@ genBypassConfigKey () {
 # * BYPASS_CIDRS
 # * BYPASS_KEY
 genBypassConfig () {
+    getBypassConfigClusterNetworks
     genBypassConfigWorkerNodes
     genBypassConfigSelfHost
     genBypassConfigExplicitIPs
@@ -174,12 +180,14 @@ genUpstreamConfig () {
 }
 
 echo "Generating maintenance mode deployment config..."
+genTrustedProxiesConfig
 genBypassConfig
 for NS in $(echo $MAS_NAMESPACES); do genUpstreamConfig $NS; done
 
 # Recreate config map used by deployment
 oc delete configmap -n $MAINT_NS default-conf --ignore-not-found >/dev/null
 CONFIG=$(sed "
+            s|@TRUSTED_PROXIES@|$TRUSTED_PROXIES|g;
             s|@BYPASS_CIDRS@|$BYPASS_CIDRS|g; 
             s|@BYPASS_KEY@|$BYPASS_KEY|g; 
             s|@UPSTREAMS@|$UPSTREAMS|g; 
