@@ -8,7 +8,7 @@ Static content served to the end users can be customized by modifying [`maintena
 
 ![Example maintenance mode landing page](maintenance.png)
 
-By default maintenance mode configuration activates for all end users **except of** ones whitelisted explicitly by IP in [`default.conf`](default.conf) file (ref. `bypass` map). This effectively allows for certain users to maintain regular MAS behavior, regardless of whether maintenance mode is **ON** or **OFF**. The tool automatically whitelists all worker nodes' IPs. This is required in order to allow cross-node communication when PODs are referring to each other using routes (e.g. MAS Manage OIDC cookie validation). Additional maintenance mode bypass matching rules can be added by updating [default.conf](default.conf) file. Changes will be re-applied every time maintenance mode is activated.
+By default maintenance mode configuration activates for all end users **except of** ones whitelisted explicitly by IP in [`default.conf`](default.conf) (ref. `bypass` map) or in [`bypass-cidrs.list`](./bypass-cidrs.list) file. Alternatively, maintenance mode can be bypassed by including `X-Bypass-Key` HTTP header to every incoming request. This effectively allows for certain users to maintain regular MAS behavior, regardless of whether maintenance mode is **ON** or **OFF**. The tool automatically whitelists all worker nodes' IPs. This is required in order to allow cross-node communication when PODs are referring to each other using routes (e.g. MAS Manage OIDC cookie validation). Additional maintenance mode bypass matching rules can be added by updating [default.conf](default.conf) file. Changes will be re-applied every time maintenance mode is activated.
 
 ## Scope
 This tool currently supports MAS Core and Manage but can easily be extended to handle other MAS components.
@@ -17,14 +17,13 @@ This tool currently supports MAS Core and Manage but can easily be extended to h
 ![Implementation details](maintenance.gif)
 
 The solution consists of following configurations:
-* Create new ingress controller (**maintenance**) handling all routes in the namespaces labeled with `type=maintenance` (ref. `.spec.namespaceSelector`). 
-* Update the **default** ingress controller by excluding all routes which are to be handled by the **maintenance** ingress controller (ref. [Sharding the default Ingress Controller](https://community.ibm.com/community/user/asset-facilities/discussion/Sharding%20the%20default%20Ingress%20Controller)). 
+* Update the **default** ingress controller by excluding all routes which are to be used in the maintenance mode (ref. [Sharding the default Ingress Controller](https://community.ibm.com/community/user/asset-facilities/discussion/Sharding%20the%20default%20Ingress%20Controller), routes under namespaces **not** labeled as `router-mode=inactive`). 
 * Configure new **maintenance** namespace, service and deployment (acting as a reverse proxy) which are meant to handle user traffic during the service window, when maintenance mode is **ON**. 
 * Generate clones of MAS Core, MAS Manage, etc. routes (a.k.a. *maintenance routes*) and repoint `.spec.to.name` and `.spec.to.targetPort` to the service created in previous step.
-* Label newly created **maintenance** namespace with `type=maintenance`.
+* Label newly created **maintenance** namespace with `router-mode=inactive`.
 
 Once everything is in place Maintenance Mode can be:
-* **Enabled** by labeling original MAS Core, MAS Manage namespaces with `type=maintenance` and removing `type=maintenance` label from **maintenance** namespace.
+* **Enabled** by labeling original MAS Core, MAS Manage namespaces with `router-mode=inactive` and removing `router-mode=inactive` label from **maintenance** namespace.
 * **Disabled** by doing the opposite of **Enable**.
 
 ### Additional Comments and Alternatives
@@ -32,19 +31,13 @@ Once everything is in place Maintenance Mode can be:
 #### Ingress Controller sharding by using [namespace](https://docs.openshift.com/container-platform/4.14/networking/ingress-sharding.html#nw-ingress-sharding-namespace-labels_ingress-sharding) vs [route](https://docs.openshift.com/container-platform/4.14/networking/ingress-sharding.html#nw-ingress-sharding-route-labels_ingress-sharding) labels
 Even though it's perfectly OK to use any of the sharding techniques it's been decided to use namespace labels to be able to easily keep new configurations away from standard MAS deployment objects. 
 
-#### One or multiple Ingress Controllers
-Ingress Controllers are abstracts backed up by OpenShift using `router-<ic-name>` deployments, created in `openshift-ingress` namespace, which are effectively HAProxy instances. If you have **multiple MAS deployments located in the same OCP cluster** then either you can go for one ingress controller (hooked up to the OCP domain) or you can have one ingress controller per MAS deployment (hooked up to`<inst>.apps.<ocp-domain>`). This tool creates one ingress controller just to save some resources used by dedicated deployment. It is perfectly fine though to go for multiple ingress controllers setup.
-
-#### Ingress Controller scaling
-**default** and **maintenance** ingress controllers are sharing parts of the domain name they're bound to (`apps.<ocp-domain>` vs. `<ocp-domain>`). This is required by MAS services addressing logic - simply original and maintenance routes must use exact same host names but yet OpenShift prevents you from creating two ingress controllers for the exact same domain.  
-Since default and maintenance ingress controllers under the hoods are using different TCP ports (`80`, `443` vs others arbitrarily chosen) then effectively it means that end users are never reaching maintenance ingress controller and if URLs stay the same (which is the goal). The traffic always goes through the **default** ingress controller. It means that **maintenance** ingress controller's number of replicas can be reduced down to 1.
-
 ## Prerequisites
 Minimum requirements to run this tool is Linux environment with following utilities:
 * shell (tested with Ubuntu Linux `bash` and MacOS `zsh`)
 * grep
 * awk
 * sed
+* openssl
 * [yq](https://mikefarah.gitbook.io/yq)
 * [OpenShift CLI](https://docs.openshift.com/container-platform/4.14/cli_reference/openshift_cli/getting-started-cli.html) 
 
