@@ -13,8 +13,6 @@ argDie 1 $# "USAGE: <env>"
 ocEnvDie $1
 
 MAINT_NS=$(ocMaintNs $ENVL)
-# Name of the ingress controller dedicated for maintenance mode
-MAINT_IC=$(ocMaintIc $ENVL)
 # Name of the deployment handling user requests in maintenance mode
 MAINT_DEPL=$(ocMaintDepl $ENVL)
 # Key name and value of the label used to tag namespaces in order to indicate

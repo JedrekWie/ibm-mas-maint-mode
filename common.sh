@@ -143,14 +143,6 @@ ocMaintNs() {
     echo maintenance-$(ocMasInstance $ENVL)
 }
 
-# Returns name of the ingress controller handling maintenance mode
-# FIXME: Update result evaluation according to your naming convention
-# For typical use cases it can be simply fixed value just like below
-ocMaintIc() {
-    envDie $1
-    echo maintenance
-}
-
 # Returns name of the deployment handling maintenance mode
 # FIXME: Update result evaluation according to your naming convention
 # For typical use cases it can be simply fixed value just like below
