@@ -172,7 +172,7 @@ genUpstreamConfig () {
             | NAME=$ROUTE_PORT_NAME yq '.spec.ports[] | select(.name == env(NAME)) | .port')
         # Guarantee uniqueness of the upstreams
         [[ $UPSTREAMS =~ "upstream $ROUTE_SERVICE {" ]] \
-            || UPSTREAMS+="upstream $ROUTE_SERVICE { server $ROUTE_SERVICE.$ROUTES_NS.svc:$ROUTE_PORT; }###"
+            || UPSTREAMS+="upstream $ROUTE_SERVICE { server $ROUTE_SERVICE.$ROUTES_NS.svc:${ROUTE_PORT:-$ROUTE_PORT_NAME}; }###"
         BACKENDS+="    ~*$ROUTE_HOST\\$ROUTE_PATH    $ROUTE_SERVICE;###"
     done <<< "$ROUTES"
 }
